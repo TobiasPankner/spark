@@ -22,26 +22,33 @@ import android.content.Context;
 import android.content.res.TypedArray;
 import android.database.DataSetObserver;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.CornerPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Build;
 import android.os.Handler;
-import android.support.annotation.ColorInt;
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import android.text.TextPaint;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewConfiguration;
+
+import androidx.annotation.ColorInt;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.robinhood.spark.animation.LineSparkAnimator;
 import com.robinhood.spark.animation.SparkAnimator;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -99,6 +106,7 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
     @ColorInt private int scrubLineColor;
     private float scrubLineWidth;
     private boolean scrubEnabled;
+    private boolean scrubActive = false;
     private @Nullable SparkAnimator sparkAnimator;
 
     // the onDraw data
@@ -106,6 +114,7 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
     private final Path sparkPath = new Path();
     private final Path baseLinePath = new Path();
     private final Path scrubLinePath = new Path();
+    private final Path greyLinePath = new Path();
 
     // adapter
     private @Nullable SparkAdapter adapter;
@@ -116,10 +125,14 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
     private Paint sparkFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint baseLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint scrubLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Paint greyLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private TextPaint textPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private @Nullable OnScrubListener scrubListener;
     private @NonNull ScrubGestureDetector scrubGestureDetector;
     private @Nullable Animator pathAnimator;
     private final RectF contentRect = new RectF();
+    private Rect textBounds = new Rect();
+    DecimalFormat df = new DecimalFormat("#.#");
 
     private List<Float> xPoints;
     private List<Float> yPoints;
@@ -178,6 +191,20 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
             sparkLinePaint.setPathEffect(new CornerPathEffect(cornerRadius));
         }
 
+        greyLinePaint.setStyle(Paint.Style.STROKE);
+        greyLinePaint.setColor(Color.argb(255, 110, 110, 120));
+        greyLinePaint.setStrokeWidth(lineWidth);
+        greyLinePaint.setStrokeCap(Paint.Cap.ROUND);
+        if (cornerRadius != 0) {
+            greyLinePaint.setPathEffect(new CornerPathEffect(cornerRadius));
+        }
+
+        textPaint.setStyle(Paint.Style.FILL);
+        textPaint.setColor(scrubLineColor);
+        textPaint.setStrokeCap(Paint.Cap.ROUND);
+        textPaint.setTextSize(40);
+        textPaint.setTextAlign(Paint.Align.LEFT);
+
         sparkFillPaint.set(sparkLinePaint);
         sparkFillPaint.setColor(fillColor);
         sparkFillPaint.setStyle(Paint.Style.FILL);
@@ -191,6 +218,8 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
         scrubLinePaint.setStrokeWidth(scrubLineWidth);
         scrubLinePaint.setColor(scrubLineColor);
         scrubLinePaint.setStrokeCap(Paint.Cap.ROUND);
+
+        df.setMaximumFractionDigits(6);
 
         final Handler handler = new Handler();
         final float touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
@@ -207,6 +236,13 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
                 @Override public int getCount() { return yData.length; }
                 @NonNull @Override public Object getItem(int index) { return yData[index]; }
                 @Override public float getY(int index) { return yData[index]; }
+                @Override public List<Float> getAll() {
+                    List<Float> result = new ArrayList<>(yData.length);
+                    for (float f : yData) {
+                        result.add(f);
+                    }
+                    return result;
+                }
             });
         }
 
@@ -288,6 +324,48 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
         invalidate();
     }
 
+    private float lineFunction(float x1, float y1, float x2, float y2, float x){
+        return y1 + ((y2 - y1)/(x2 - x1))*(x - x1);
+    }
+
+
+    private void createGreyLine(float xOfScrape){
+        if (adapter == null) return;
+        if (getWidth() == 0 || getHeight() == 0) return;
+
+        final int adapterCount = adapter.getCount();
+
+        // make our main graph path
+        scaleHelper = new ScaleHelper(adapter, contentRect, lineWidth, isFillInternal());
+
+        greyLinePath.reset();
+        int cnt = 0;
+        for (int i = 0; i < adapterCount; i++) {
+            final float x = scaleHelper.getX(adapter.getX(i));
+            final float y = scaleHelper.getY(adapter.getY(i));
+
+            if(x < xOfScrape)
+                continue;
+
+            if(cnt == 0) {
+                try {
+                    final float prevX = scaleHelper.getX(adapter.getX(i-1));
+                    final float prevY = scaleHelper.getY(adapter.getY(i-1));
+
+                    final float calculatedY = lineFunction(prevX, prevY, x, y, xOfScrape);
+                    greyLinePath.moveTo(xOfScrape, calculatedY);
+                    greyLinePath.lineTo(x, y);
+                }
+                catch (Exception e){
+                    greyLinePath.moveTo(x, y);
+                }
+            } else {
+                greyLinePath.lineTo(x, y);
+            }
+            cnt ++;
+        }
+    }
+
     @Nullable
     private Float getFillEdge() {
         switch (fillType) {
@@ -360,10 +438,11 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
     }
 
     private void setScrubLine(float x) {
+        createGreyLine(x);
         x = resolveBoundedScrubLine(x);
         scrubLinePath.reset();
-        scrubLinePath.moveTo(x, getPaddingTop());
-        scrubLinePath.lineTo(x, getHeight() - getPaddingBottom());
+        scrubLinePath.moveTo(x, 0);
+        scrubLinePath.lineTo(x, getHeight());
         invalidate();
     }
 
@@ -396,14 +475,56 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        canvas.drawPath(baseLinePath, baseLinePaint);
+        if (!scrubActive)
+            canvas.drawPath(baseLinePath, baseLinePaint);
 
         if(fillType != FillType.NONE){
             canvas.drawPath(renderPath, sparkFillPaint);
         }
 
         canvas.drawPath(renderPath, sparkLinePaint);
+        canvas.drawPath(greyLinePath, greyLinePaint);
         canvas.drawPath(scrubLinePath, scrubLinePaint);
+
+        if (adapter == null || scrubActive)
+            return;
+
+        List<Float> allValues = (List<Float>) adapter.getAll();
+        if (allValues.isEmpty())
+            return;
+
+        float maxValue = Collections.max(allValues);
+        float minValue = Collections.min(allValues);
+
+        int maxIndex = allValues.indexOf(maxValue);
+        int minIndex = allValues.indexOf(minValue);
+
+        if(maxIndex < 0 || minIndex < 0)
+            return;
+
+        String maxText = df.format(Double.parseDouble(Float.toString(round(maxValue))));
+        String minText = df.format(Double.parseDouble(Float.toString(round(minValue))));
+
+        float maxX = scaleHelper.getX(adapter.getX(maxIndex)) - (textPaint.measureText(maxText)/2);
+        float maxY = scaleHelper.getY(adapter.getY(maxIndex)) - 25;
+        // Make sure the text is at least 5px from the end of the canvas
+        if(getWidth() - (maxX + textPaint.measureText(maxText)) < 5)
+            maxX = getWidth() -  textPaint.measureText(maxText) - 5;
+        else if (maxX < 5)
+            maxX = 5;
+
+        textPaint.getTextBounds(minText, 0, minText.length(), textBounds);
+        int minTextHeight = textBounds.height();
+        float minX = scaleHelper.getX(adapter.getX(minIndex)) - (textPaint.measureText(minText)/2);
+        float minY = scaleHelper.getY(adapter.getY(minIndex)) + minTextHeight + 25;
+        // Make sure the text is at least 5px from the start of the canvas
+        if(getWidth() - (minX + textPaint.measureText(minText)) < 5)
+            minX = getWidth() -  textPaint.measureText(minText) - 5;
+        else if (minX < 5)
+            minX = 5;
+
+        canvas.drawText(minText, minX , minY, textPaint);
+        canvas.drawText(maxText, maxX , maxY, textPaint);
     }
 
     /**
@@ -778,6 +899,7 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
         renderPath.reset();
         sparkPath.reset();
         baseLinePath.reset();
+        greyLinePath.reset();
         invalidate();
     }
 
@@ -910,14 +1032,16 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
                 scrubListener.onScrubbed(adapter.getItem(index));
             }
         }
-
+        scrubActive = true;
         setScrubLine(x);
     }
 
     @Override
     public void onScrubEnded() {
         scrubLinePath.reset();
+        greyLinePath.reset();
         if (scrubListener != null) scrubListener.onScrubbed(null);
+        scrubActive = false;
         invalidate();
     }
 
@@ -949,4 +1073,19 @@ public class SparkView extends View implements ScrubGestureDetector.ScrubListene
             clearData();
         }
     };
+
+    private float round(float value){
+        int places = -1;
+        if (value >= 1)
+            places = 2;
+        else if (value >= 0.1)
+            places = 4;
+
+        if(places < 0)
+            return value;
+
+        BigDecimal bd = BigDecimal.valueOf(value);
+        bd = bd.setScale(places, RoundingMode.HALF_UP);
+        return bd.floatValue();
+    }
 }

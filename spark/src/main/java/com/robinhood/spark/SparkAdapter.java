@@ -19,8 +19,11 @@ package com.robinhood.spark;
 import android.database.DataSetObservable;
 import android.database.DataSetObserver;
 import android.graphics.RectF;
-import android.support.annotation.NonNull;
-import android.support.annotation.VisibleForTesting;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.VisibleForTesting;
+
+import java.util.Collection;
 
 /**
  * A simple adapter class - evenly distributes your points along the x axis, does not draw a base
@@ -51,6 +54,9 @@ public abstract class SparkAdapter {
      * @return the float representation of the Y value of the point at the given index.
      */
     public abstract float getY(int index);
+
+
+    public abstract Collection<Float> getAll();
 
     /**
      * Gets the float representation of the boundaries of the entire dataset. By default, this will
